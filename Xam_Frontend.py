@@ -31,6 +31,9 @@ class App:
         self.drafts = {}
         self.connected = True
         self.closed = False
+        self.eula_textbutt = fl.TextButton('Открыть политику конфиденциальности и примечания для пользователя',
+                                           on_click=self.eula_def,
+                                           style=fl.ButtonStyle(color=fl.Colors.BLUE, text_style=fl.TextStyle(size=8)))
 
         # Чтение и отправка используют один chat.txt: выполняем их по очереди.
         self.backend_lock = asyncio.Lock()
@@ -136,7 +139,7 @@ class App:
                     ], spacing=16, tight=True),
                 ),
                 fl.Text('Нажимая кнопку "Войти" или "Создать аккаунт", вы автоматически соглашаетесь с политикой конфиденциальности и подтверждаете, что ознакомлены с примечаниями для пользователя.', color=MUTED, size=8),
-                fl.TextButton('Открыть политику конфиденциальности и примечания для пользователя', on_click=self.eula_def, style=fl.ButtonStyle(color=fl.Colors.BLUE, text_style=fl.TextStyle(size=8))),
+                self.eula_textbutt,
             ], horizontal_alignment=fl.CrossAxisAlignment.CENTER,
                 alignment=fl.MainAxisAlignment.CENTER, scroll=fl.ScrollMode.AUTO),
         )
@@ -579,6 +582,7 @@ class App:
             content=fl.Column([
                 self.make_avatar(self.username), fl.Text(self.username, size=20, color=TEXT),
                 fl.Text('Вы вошли в XAM. Ваши чаты доступны в списке слева.', color=MUTED),
+                self.eula_textbutt
             ], spacing=16, tight=True, width=300),
             actions=[fl.TextButton('Закрыть', on_click=self.close_dialog),
                      fl.TextButton('Выйти', on_click=self.logout)],
