@@ -1,6 +1,6 @@
 import os
 import sys
-
+import io
 import yadisk
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -21,6 +21,7 @@ class Backend:
         self.y = yadisk.YaDisk(token=self.token)
         self.flag = True
         self.frase = Fernet(self.key).encrypt('эта фраза должна уберегать файлы от исправления'.encode('utf-8'))
+        self.get_eula()
 
         try:
             with open('user_inf.txt', 'r') as f:
@@ -38,6 +39,15 @@ class Backend:
                 xzx = f.read()
         except FileNotFoundError:
             self.flag = False
+
+    def get_eula(self):
+        buffer = io.BytesIO()
+        self.y.download('/eula.txt', buffer)
+        buffer.seek(0)
+        eula1 = buffer.read().decode("utf-8")
+        eula = eula1.split('@')[0]
+        un = eula1.split('@')[1]
+        return eula, un
 
     def get_chats(self):
         chats = []
@@ -94,6 +104,52 @@ class Backend:
 
     def upload_message(self, chat_path):
         self.y.upload('chat.txt', f'{chat_path}/chat.txt', overwrite=True)
+
+    def edit_message(self, secuser, index, new_text):
+        """Изменяет уже отправленное сообщение по его индексу в списке,
+        возвращаемом read_messages. Редактировать можно только свои сообщения."""
+        username = self.a.split('@')[0]
+
+        path1 = f'/chats/{username}@{secuser}'
+        path2 = f'/chats/{secuser}@{username}'
+        if self.y.exists(path1):
+            chat_path = path1
+        elif self.y.exists(path2):
+            chat_path = path2
+        else:
+            return False
+
+        self.y.download(f'{chat_path}/chat.txt', 'chat.txt')
+        with open('chat.txt', 'rb') as f:
+            encrypted_chat = f.read()
+
+        if len(encrypted_chat) == 0:
+            return False
+
+        full_text = Fernet(self.key).decrypt(encrypted_chat).decode('utf-8')
+        parts = full_text.split('|')
+        # parts[0] — служебная фраза, не сообщение; настоящие сообщения начинаются с parts[1],
+        # что соответствует индексам 0.. в списке, который возвращает read_messages.
+        real_index = index + 1
+        if real_index <= 0 or real_index >= len(parts):
+            return False
+
+        entry = parts[real_index]
+        if '@' not in entry:
+            return False
+        _, author = entry.rsplit('@', 1)
+        if author != username:
+            return False
+
+        new_text = new_text.replace('@', '{sobachka}').replace('|', '{vertpalka}')
+        parts[real_index] = f'{new_text} (ред.)@{author}'
+
+        new_full_text = '|'.join(parts)
+        encrypted = Fernet(self.key).encrypt(new_full_text.encode('utf-8'))
+        with open('chat.txt', 'wb') as f:
+            f.write(encrypted)
+        self.y.upload('chat.txt', f'{chat_path}/chat.txt', overwrite=True)
+        return True
 
     def start_chat(self):
         with open('messages.txt', 'w') as f:

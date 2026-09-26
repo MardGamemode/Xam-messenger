@@ -3,7 +3,6 @@ import asyncio
 import flet as fl
 
 from Xam_Backend import Backend
-from eula import eula, un
 
 
 BACKGROUND = fl.Colors.SURFACE
@@ -21,16 +20,18 @@ MESSAGE_BACKGROUND = '#245B4D'
 
 class App:
     def __init__(self, page: fl.Page, backend=None):
-        self.un = un
-        self.eula = eula
         self.page = page
-        self.backend = backend
+        self.backend = Backend()
         self.username = ''
         self.current_chat = None
         self.chat_names = []
+        self.current_raw_messages = []
+        self.edit_target_index = None
         self.drafts = {}
         self.connected = True
         self.closed = False
+        self.eula = self.backend.get_eula()[0]
+        self.un = self.backend.get_eula()[1]
         self.eula_textbutt = fl.TextButton('Открыть политику конфиденциальности и примечания для пользователя',
                                            on_click=self.eula_def,
                                            style=fl.ButtonStyle(color=fl.Colors.BLUE, text_style=fl.TextStyle(size=8)))
@@ -219,6 +220,13 @@ class App:
             border_radius=14, border_color=BORDER, focused_border_color=GREEN,
             bgcolor=SURFACE, text_size=15, content_padding=16, max_length=700
         )
+        self.edit_field = fl.TextField(
+            hint_text='Изменить сообщение…', multiline=True, min_lines=1, max_lines=4,
+            border_radius=14, border_color=BORDER, focused_border_color=GREEN,
+            bgcolor=SURFACE, text_size=15, content_padding=16, max_length=700,
+            autofocus=True, on_submit=self.confirm_edit,
+        )
+        self.edit_error = fl.Text(color=ERROR, size=12, visible=False)
         self.send_button = fl.IconButton(
             fl.Icons.ARROW_UPWARD, tooltip='Отправить сообщение', on_click=self.send_message,
             bgcolor=GREEN, icon_color=fl.Colors.ON_PRIMARY, width=48, height=48,
@@ -488,6 +496,7 @@ class App:
             self.chat_status.value = 'Загружаем сообщения…'
             self.header_avatar.content.value = name[:1].upper()
             self.messages.controls = []
+            self.current_raw_messages = []
             self.empty_chat.visible = False
             self.welcome.visible = False
             self.conversation.visible = True
@@ -505,15 +514,25 @@ class App:
             self.filter_chats()
             self.resize()
 
-    def make_message(self, message):
+    def make_message(self, index, message):
         text, author = message.rsplit('@', 1)
         text = text.replace('{sobachka}', '@').replace('{vertpalka}', '|')
         outgoing = author == self.username
+        header = [
+            fl.Text('Вы' if outgoing else author, size=11,
+                    color='#D4E6D6' if outgoing else MUTED, weight=fl.FontWeight.W_600),
+        ]
+        if outgoing:
+            header.append(fl.Container(expand=True))
+            header.append(fl.IconButton(
+                fl.Icons.EDIT_OUTLINED, icon_size=14, icon_color='#D4E6D6',
+                width=22, height=22, data=index, tooltip='Изменить сообщение',
+                on_click=self.start_edit,
+            ))
         bubble = fl.Container(
             padding=16, border_radius=18, bgcolor=MESSAGE_BACKGROUND if outgoing else SURFACE,
             content=fl.Column([
-                fl.Text('Вы' if outgoing else author, size=11,
-                        color='#D4E6D6' if outgoing else MUTED, weight=fl.FontWeight.W_600),
+                fl.Row(header, spacing=0),
                 fl.Text(text, size=15, color=fl.Colors.WHITE if outgoing else TEXT, selectable=True,
                         weight=fl.FontWeight.W_400),
             ], spacing=6, tight=True),
@@ -521,6 +540,56 @@ class App:
         bubble.expand = 8
         space = fl.Container(expand=2)
         return fl.Row([space, bubble] if outgoing else [bubble, space])
+
+    def start_edit(self, e):
+        index = e.control.data
+        if index is None or index >= len(self.current_raw_messages):
+            return
+        raw = self.current_raw_messages[index]
+        text, author = raw.rsplit('@', 1)
+        if author != self.username:
+            return
+        text = text.replace('{sobachka}', '@').replace('{vertpalka}', '|')
+        if text.endswith(' (ред.)'):
+            text = text[:-len(' (ред.)')]
+        self.edit_target_index = index
+        self.edit_field.value = text
+        self.edit_error.visible = False
+        self.page.show_dialog(fl.AlertDialog(
+            title=fl.Text('Изменить сообщение'),
+            content=fl.Container(
+                width=360,
+                content=fl.Column([self.edit_field, self.edit_error], spacing=8, tight=True),
+            ),
+            actions=[
+                fl.TextButton('Отмена', on_click=self.close_dialog),
+                fl.TextButton('Сохранить', on_click=self.confirm_edit),
+            ],
+        ))
+        self.page.update()
+
+    async def confirm_edit(self, e=None):
+        if self.edit_target_index is None or not self.current_chat:
+            self.close_dialog()
+            return
+        new_text = self.edit_field.value.strip()
+        if not new_text:
+            self.edit_error.value = 'Сообщение не может быть пустым.'
+            self.edit_error.visible = True
+            self.page.update()
+            return
+        index = self.edit_target_index
+        recipient = self.current_chat
+        self.close_dialog()
+        try:
+            async with self.backend_lock:
+                ok = await asyncio.to_thread(self.backend.edit_message, recipient, index, new_text)
+            if not ok:
+                self.notify('Не удалось изменить сообщение.')
+            self.edit_target_index = None
+            await self.load_messages()
+        except Exception:
+            self.notify('Не удалось изменить сообщение. Попробуйте ещё раз.')
 
     async def load_messages(self):
         async with self.backend_lock:
@@ -530,8 +599,11 @@ class App:
                 messages, count, old_count = await asyncio.to_thread(
                     self.backend.read_messages, self.current_chat,
                 )
-                if count != len(self.messages.controls):
-                    self.messages.controls = [self.make_message(message) for message in messages]
+                if messages != self.current_raw_messages:
+                    self.current_raw_messages = messages
+                    self.messages.controls = [
+                        self.make_message(i, message) for i, message in enumerate(messages)
+                    ]
                 self.empty_chat.visible = count == 0
                 self.chat_status.value = 'Личная переписка'
                 self.chat_status.color = MUTED
@@ -599,6 +671,7 @@ class App:
                 self.chat_list.controls = []
                 self.chat_count.value = '0'
                 self.drafts.clear()
+                self.current_raw_messages = []
                 self.messages.controls = []
                 self.message_field.value = ''
                 self.search_field.value = ''
